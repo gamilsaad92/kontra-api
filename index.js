@@ -31,15 +31,15 @@ app.post('/api/validate-photo', upload.single('image'), (req, res) => {
 });
 
 app.post('/api/draw-request', async (req, res) => {
-  const { project, amount, description, user_id } = req.body;
+  const { project, amount, description } = req.body;
 
-  if (!project || !amount || !description || !user_id) {
+  if (!project || !amount || !description) {
     return res.status(400).json({ message: 'Missing required fields' });
   }
 
   const { data, error } = await supabase
     .from('draw_requests')
-    .insert([{ project, amount, description, status: 'submitted', user_id }]);
+    .insert([{ project, amount, description, status: 'submitted' }]);
 
   if (error) {
     console.error('Insert error:', error);
