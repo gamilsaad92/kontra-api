@@ -11,7 +11,6 @@ app.use(express.json());
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-// Health check
 app.get('/', (req, res) => {
   res.send('Kontra API is running');
 });
@@ -20,7 +19,6 @@ app.get('/api/test', (req, res) => {
   res.send('✅ API is alive');
 });
 
-// AI Photo Validation
 app.post('/api/validate-photo', upload.single('image'), (req, res) => {
   if (!req.file) return res.status(400).json({ result: 'No file uploaded' });
 
@@ -32,7 +30,6 @@ app.post('/api/validate-photo', upload.single('image'), (req, res) => {
   res.json({ result });
 });
 
-// Draw Request Submission
 app.post('/api/draw-request', async (req, res) => {
   const { project, amount, description } = req.body;
 
@@ -42,13 +39,12 @@ app.post('/api/draw-request', async (req, res) => {
 
   const { data, error } = await supabase
     .from('draw_requests')
-    .insert(
-      [{ project, amount, description, status: 'submitted' }],
-      { returning: 'representation' }
-    );
+    .insert([{ project, amount, description, status: 'submitted' }])
+    .select()
+    .single();
 
   if (error) {
-    console.error('❌ Insert error:', error);
+    console.error('Insert error:', error);
     return res.status(500).json({ message: 'Failed to submit draw request' });
   }
 
@@ -56,7 +52,6 @@ app.post('/api/draw-request', async (req, res) => {
   res.status(200).json({ message: 'Draw request submitted!', data });
 });
 
-// Review Actions
 app.post('/api/review-draw', async (req, res) => {
   const { id, status, comment } = req.body;
 
@@ -69,7 +64,10 @@ app.post('/api/review-draw', async (req, res) => {
     reviewedAt: new Date().toISOString(),
   };
 
-  if (status === 'approved') updates.approvedAt = new Date().toISOString();
+  if (status === 'approved') {
+    updates.approvedAt = new Date().toISOString();
+  }
+
   if (status === 'rejected') {
     updates.rejectedAt = new Date().toISOString();
     updates.reviewComment = comment || '';
@@ -79,18 +77,19 @@ app.post('/api/review-draw', async (req, res) => {
     .from('draw_requests')
     .update(updates)
     .eq('id', id)
-    .select();
+    .select()
+    .single();
 
   if (error) {
-    console.error('❌ Update error:', error);
+    console.error('Update error:', error);
     return res.status(500).json({ message: 'Failed to update draw request' });
   }
 
-  console.log('✏️ Review action complete:', data);
+  console.log('🔄 Updated draw request:', data);
   res.status(200).json({ message: 'Draw request updated', data });
 });
 
 const PORT = process.env.PORT || 5050;
 app.listen(PORT, () => {
-  console.log(`🚀 Kontra API listening on port ${PORT}`);
+  console.log(`Kontra API listening on port ${PORT}`);
 });
