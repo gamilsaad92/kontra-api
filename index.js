@@ -8,28 +8,9 @@ const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
 
 app.use(cors());
-
-// 🔍 Primary JSON parser
 app.use(express.json());
 
-// 🛡️ Fallback raw body parser (for cases where express.json fails silently)
-app.use(express.text({ type: 'application/json' }));
-app.use((req, res, next) => {
-  if (
-    req.headers['content-type'] === 'application/json' &&
-    typeof req.body === 'string'
-  ) {
-    try {
-      req.body = JSON.parse(req.body);
-    } catch (err) {
-      console.error('JSON parse error:', err);
-      return res.status(400).json({ message: 'Invalid JSON' });
-    }
-  }
-  next();
-});
-
-// ✅ Supabase client setup
+// 🔌 Connect to Supabase
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -44,7 +25,7 @@ app.get('/api/test', (req, res) => {
   res.send('✅ API is alive');
 });
 
-// 📸 AI photo validation (for image input)
+// 📸 AI photo validation
 app.post('/api/validate-photo', upload.single('image'), (req, res) => {
   if (!req.file) return res.status(400).json({ result: 'No file uploaded' });
 
@@ -57,20 +38,56 @@ app.post('/api/validate-photo', upload.single('image'), (req, res) => {
   res.json({ result });
 });
 
+// 🧠 Risk Scoring Logic
+function calculateRiskScore({ amount, description, lastSubmittedAt }) {
+  let score = 100;
+
+  if (amount > 100000) score -= 20;
+  if (description.length < 15) score -= 10;
+
+  if (lastSubmittedAt) {
+    const lastDate = new Date(lastSubmittedAt);
+    const now = new Date();
+    const diffInDays = (now - lastDate) / (1000 * 60 * 60 * 24);
+    if (diffInDays < 7) score -= 15;
+  }
+
+  return Math.max(score, 0);
+}
+
 // 📥 Draw request submission
 app.post('/api/draw-request', async (req, res) => {
-  console.log('📨 Headers:', req.headers);
-  console.log('📦 Raw request body:', req.body); // Debug line
-
   const { project, amount, description } = req.body;
 
   if (!project || !amount || !description) {
     return res.status(400).json({ message: 'Missing required fields' });
   }
 
+  // 1. Get last draw for the project
+  const { data: lastDraw, error: lastDrawError } = await supabase
+    .from('draw_requests')
+    .select('submitted_at')
+    .eq('project', project)
+    .order('submitted_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (lastDrawError) {
+    console.error('Error fetching last draw:', lastDrawError);
+    return res.status(500).json({ message: 'Error fetching previous draws' });
+  }
+
+  // 2. Calculate risk score
+  const riskScore = calculateRiskScore({
+    amount,
+    description,
+    lastSubmittedAt: lastDraw?.submitted_at
+  });
+
+  // 3. Submit new draw request
   const { data, error } = await supabase
     .from('draw_requests')
-    .insert([{ project, amount, description, status: 'submitted' }])
+    .insert([{ project, amount, description, status: 'submitted', risk_score: riskScore }])
     .select()
     .single();
 
@@ -79,11 +96,11 @@ app.post('/api/draw-request', async (req, res) => {
     return res.status(500).json({ message: 'Failed to submit draw request' });
   }
 
-  console.log('📥 Submitted draw request:', data);
+  console.log('📥 Submitted draw with risk score:', data.risk_score);
   res.status(200).json({ message: 'Draw request submitted!', data });
 });
 
-// 🔁 Review draw update (approve/reject)
+// 🔄 Review/approve draw
 app.post('/api/review-draw', async (req, res) => {
   const { id, status, comment } = req.body;
 
@@ -96,10 +113,7 @@ app.post('/api/review-draw', async (req, res) => {
     reviewedAt: new Date().toISOString(),
   };
 
-  if (status === 'approved') {
-    updates.approvedAt = new Date().toISOString();
-  }
-
+  if (status === 'approved') updates.approvedAt = new Date().toISOString();
   if (status === 'rejected') {
     updates.rejectedAt = new Date().toISOString();
     updates.reviewComment = comment || '';
@@ -121,7 +135,7 @@ app.post('/api/review-draw', async (req, res) => {
   res.status(200).json({ message: 'Draw request updated', data });
 });
 
-// 🚀 Start the server
+// 🚀 Start server
 const PORT = process.env.PORT || 5050;
 app.listen(PORT, () => {
   console.log(`Kontra API listening on port ${PORT}`);
