@@ -6,11 +6,36 @@ require('dotenv').config();
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
+
 app.use(cors());
+
+// 🔍 Primary JSON parser
 app.use(express.json());
 
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+// 🛡️ Fallback raw body parser (for cases where express.json fails silently)
+app.use(express.text({ type: 'application/json' }));
+app.use((req, res, next) => {
+  if (
+    req.headers['content-type'] === 'application/json' &&
+    typeof req.body === 'string'
+  ) {
+    try {
+      req.body = JSON.parse(req.body);
+    } catch (err) {
+      console.error('JSON parse error:', err);
+      return res.status(400).json({ message: 'Invalid JSON' });
+    }
+  }
+  next();
+});
 
+// ✅ Supabase client setup
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
+
+// 🌐 Health check
 app.get('/', (req, res) => {
   res.send('Kontra API is running');
 });
@@ -19,18 +44,24 @@ app.get('/api/test', (req, res) => {
   res.send('✅ API is alive');
 });
 
+// 📸 AI photo validation (for image input)
 app.post('/api/validate-photo', upload.single('image'), (req, res) => {
   if (!req.file) return res.status(400).json({ result: 'No file uploaded' });
 
   const fileSizeKB = req.file.size / 1024;
-  const result = fileSizeKB < 30
-    ? 'Image too small — likely blurry ❌'
-    : 'Image passed validation ✅';
+  const result =
+    fileSizeKB < 30
+      ? 'Image too small — likely blurry ❌'
+      : 'Image passed validation ✅';
 
   res.json({ result });
 });
 
+// 📥 Draw request submission
 app.post('/api/draw-request', async (req, res) => {
+  console.log('📨 Headers:', req.headers);
+  console.log('📦 Raw request body:', req.body); // Debug line
+
   const { project, amount, description } = req.body;
 
   if (!project || !amount || !description) {
@@ -52,6 +83,7 @@ app.post('/api/draw-request', async (req, res) => {
   res.status(200).json({ message: 'Draw request submitted!', data });
 });
 
+// 🔁 Review draw update (approve/reject)
 app.post('/api/review-draw', async (req, res) => {
   const { id, status, comment } = req.body;
 
@@ -89,6 +121,7 @@ app.post('/api/review-draw', async (req, res) => {
   res.status(200).json({ message: 'Draw request updated', data });
 });
 
+// 🚀 Start the server
 const PORT = process.env.PORT || 5050;
 app.listen(PORT, () => {
   console.log(`Kontra API listening on port ${PORT}`);
