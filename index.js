@@ -87,7 +87,14 @@ app.post('/api/draw-request', async (req, res) => {
   // 3. Submit new draw request
   const { data, error } = await supabase
     .from('draw_requests')
-    .insert([{ project, amount, description, status: 'submitted', risk_score: riskScore }])
+    .insert([{
+      project,
+      amount,
+      description,
+      status: 'submitted',
+      risk_score: riskScore,
+      submitted_at: new Date().toISOString() // ✅ timestamp added here
+    }])
     .select()
     .single();
 
@@ -133,6 +140,21 @@ app.post('/api/review-draw', async (req, res) => {
 
   console.log('🔄 Updated draw request:', data);
   res.status(200).json({ message: 'Draw request updated', data });
+});
+
+// 🗂️ Get all draws (for frontend)
+app.get('/api/get-draws', async (req, res) => {
+  const { data, error } = await supabase
+    .from('draw_requests')
+    .select('*')
+    .order('submitted_at', { ascending: false });
+
+  if (error) {
+    console.error('Get draws error:', error);
+    return res.status(500).json({ message: 'Failed to fetch draw requests' });
+  }
+
+  res.json({ draws: data });
 });
 
 // 🚀 Start server
