@@ -157,6 +157,28 @@ app.get('/api/get-draws', async (req, res) => {
   res.json({ draws: data });
 });
 
+// 🔄 Add inspection for a draw
+app.post('/api/add-inspection', async (req, res) => {
+  const { draw_id, inspector, notes, photos } = req.body;
+
+  if (!draw_id || !inspector) {
+    return res.status(400).json({ message: 'Missing draw ID or inspector name' });
+  }
+
+  const { data, error } = await supabase
+    .from('inspections')
+    .insert([{ draw_id, inspector, notes, photos, created_at: new Date().toISOString() }])
+    .select()
+    .single();
+
+  if (error) {
+    console.error('Insert inspection error:', error);
+    return res.status(500).json({ message: 'Failed to add inspection' });
+  }
+
+  res.status(200).json({ message: 'Inspection submitted', data });
+});
+
 // 🚀 Start server
 const PORT = process.env.PORT || 5050;
 app.listen(PORT, () => {
