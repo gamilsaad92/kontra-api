@@ -28,42 +28,36 @@ app.get('/api/test', (req, res) => {
 // 📸 AI photo validation
 app.post('/api/validate-photo', upload.single('image'), (req, res) => {
   if (!req.file) return res.status(400).json({ result: 'No file uploaded' });
-
   const fileSizeKB = req.file.size / 1024;
-  const result =
-    fileSizeKB < 30
-      ? 'Image too small — likely blurry ❌'
-      : 'Image passed validation ✅';
-
+  const result = fileSizeKB < 30
+    ? 'Image too small — likely blurry ❌'
+    : 'Image passed validation ✅';
   res.json({ result });
 });
 
 // 🧠 Risk Scoring Logic
 function calculateRiskScore({ amount, description, lastSubmittedAt }) {
   let score = 100;
-
   if (amount > 100000) score -= 20;
   if (description.length < 15) score -= 10;
-
   if (lastSubmittedAt) {
     const lastDate = new Date(lastSubmittedAt);
     const now = new Date();
     const diffInDays = (now - lastDate) / (1000 * 60 * 60 * 24);
     if (diffInDays < 7) score -= 15;
   }
-
   return Math.max(score, 0);
 }
 
 // 📥 Draw request submission
 app.post('/api/draw-request', async (req, res) => {
-  const { project, amount, description } = req.body;
+  const { project, amount, description, project_number, property_location } = req.body;
 
-  if (!project || !amount || !description) {
+  if (!project || !amount || !description || !project_number || !property_location) {
     return res.status(400).json({ message: 'Missing required fields' });
   }
 
-  // 1. Get last draw for the project
+  // 1. Fetch last draw timestamp
   const { data: lastDraw, error: lastDrawError } = await supabase
     .from('draw_requests')
     .select('submitted_at')
@@ -84,16 +78,18 @@ app.post('/api/draw-request', async (req, res) => {
     lastSubmittedAt: lastDraw?.submitted_at
   });
 
-  // 3. Submit new draw request
+  // 3. Insert new draw request with extra fields
   const { data, error } = await supabase
     .from('draw_requests')
     .insert([{
       project,
       amount,
       description,
+      project_number,
+      property_location,
       status: 'submitted',
       risk_score: riskScore,
-      submitted_at: new Date().toISOString() // ✅ timestamp added here
+      submitted_at: new Date().toISOString()
     }])
     .select()
     .single();
@@ -107,19 +103,12 @@ app.post('/api/draw-request', async (req, res) => {
   res.status(200).json({ message: 'Draw request submitted!', data });
 });
 
-// 🔄 Review/approve draw
+// 🔄 Review / approve draw
 app.post('/api/review-draw', async (req, res) => {
   const { id, status, comment } = req.body;
+  if (!id || !status) return res.status(400).json({ message: 'Missing id or status' });
 
-  if (!id || !status) {
-    return res.status(400).json({ message: 'Missing id or status' });
-  }
-
-  const updates = {
-    status,
-    reviewedAt: new Date().toISOString(),
-  };
-
+  const updates = { status, reviewedAt: new Date().toISOString() };
   if (status === 'approved') updates.approvedAt = new Date().toISOString();
   if (status === 'rejected') {
     updates.rejectedAt = new Date().toISOString();
@@ -142,11 +131,13 @@ app.post('/api/review-draw', async (req, res) => {
   res.status(200).json({ message: 'Draw request updated', data });
 });
 
-// 🗂️ Get all draws (for frontend)
+// 🗂️ Get all draws including new fields
 app.get('/api/get-draws', async (req, res) => {
   const { data, error } = await supabase
     .from('draw_requests')
-    .select('*')
+    .select(
+      'id, project, amount, description, project_number, property_location, status, submitted_at, reviewedAt, approvedAt, rejectedAt, reviewComment, risk_score'
+    )
     .order('submitted_at', { ascending: false });
 
   if (error) {
@@ -157,30 +148,6 @@ app.get('/api/get-draws', async (req, res) => {
   res.json({ draws: data });
 });
 
-// 🔄 Add inspection for a draw
-app.post('/api/add-inspection', async (req, res) => {
-  const { draw_id, inspector, notes, photos } = req.body;
-
-  if (!draw_id || !inspector) {
-    return res.status(400).json({ message: 'Missing draw ID or inspector name' });
-  }
-
-  const { data, error } = await supabase
-    .from('inspections')
-    .insert([{ draw_id, inspector, notes, photos, created_at: new Date().toISOString() }])
-    .select()
-    .single();
-
-  if (error) {
-    console.error('Insert inspection error:', error);
-    return res.status(500).json({ message: 'Failed to add inspection' });
-  }
-
-  res.status(200).json({ message: 'Inspection submitted', data });
-});
-
 // 🚀 Start server
 const PORT = process.env.PORT || 5050;
-app.listen(PORT, () => {
-  console.log(`Kontra API listening on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Kontra API listening on port ${PORT}`));
