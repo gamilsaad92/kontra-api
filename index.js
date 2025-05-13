@@ -2,7 +2,6 @@ const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
 const { createClient } = require('@supabase/supabase-js');
-const aiService = require('./aiService');
 require('dotenv').config();
 
 const app = express();
@@ -43,6 +42,11 @@ function calculateRiskScore({ amount, description, lastSubmittedAt }) {
     if (diffInDays < 7) score -= 15;
   }
   return Math.max(score, 0);
+}
+
+// Stub for lien waiver AI verification
+async function verifyLienWaiver(fileBuffer) {
+  return { errors: [], fields: {} };
 }
 
 // 📥 Draw request submission
@@ -91,6 +95,7 @@ app.post('/api/draw-request', async (req, res) => {
     console.error('Insert error:', error);
     return res.status(500).json({ message: 'Failed to submit draw request' });
   }
+
   console.log('📥 Submitted draw with risk score:', data.risk_score);
   res.status(200).json({ message: 'Draw request submitted!', data });
 });
@@ -117,6 +122,7 @@ app.post('/api/review-draw', async (req, res) => {
     console.error('Update error:', error);
     return res.status(500).json({ message: 'Failed to update draw request' });
   }
+
   console.log('🔄 Updated draw request:', data);
   res.status(200).json({ message: 'Draw request updated', data });
 });
@@ -133,12 +139,12 @@ app.get('/api/get-draws', async (req, res) => {
       project_number,
       property_location,
       status,
-      submitted_at as submittedAt,
-      reviewed_at   as reviewedAt,
-      approved_at   as approvedAt,
-      rejected_at   as rejectedAt,
-      review_comment as reviewComment,
-      risk_score    as riskScore
+      submitted_at    as submittedAt,
+      reviewed_at     as reviewedAt,
+      approved_at     as approvedAt,
+      rejected_at     as rejectedAt,
+      review_comment  as reviewComment,
+      risk_score      as riskScore
     `)
     .order('submitted_at', { ascending: false });
   if (error) {
@@ -155,6 +161,7 @@ app.post('/api/upload-lien-waiver', upload.single('file'), async (req, res) => {
     return res.status(400).json({ message: 'Missing required fields or file' });
   }
 
+  // 1. Save file to Supabase Storage
   const filePath = `lien-waivers/${draw_id}/${Date.now()}_${req.file.originalname}`;
   const { error: uploadError } = await supabase
     .storage
@@ -170,9 +177,11 @@ app.post('/api/upload-lien-waiver', upload.single('file'), async (req, res) => {
     .getPublicUrl(filePath)
     .publicURL;
 
-  const aiReport = await aiService.verifyLienWaiver(req.file.buffer);
+  // 2. AI verification stub
+  const aiReport = await verifyLienWaiver(req.file.buffer);
   const passed = aiReport.errors.length === 0;
 
+  // 3. Insert record
   const { data, error } = await supabase
     .from('lien_waivers')
     .insert([{
@@ -190,6 +199,7 @@ app.post('/api/upload-lien-waiver', upload.single('file'), async (req, res) => {
     console.error('Insert lien waiver error:', error);
     return res.status(500).json({ message: 'Failed to save waiver' });
   }
+
   res.status(200).json({ message: 'Lien waiver uploaded', data });
 });
 
