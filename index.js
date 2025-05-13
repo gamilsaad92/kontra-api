@@ -147,6 +147,50 @@ app.get('/api/get-draws', async (req, res) => {
 
   res.json({ draws: data });
 });
+pp.post('/api/upload-lien-waiver', upload.single('file'), async (req, res) => {
+  const { draw_id, contractor_name, waiver_type } = req.body;
+  if (!draw_id || !contractor_name || !waiver_type || !req.file) {
+    return res.status(400).json({ message: 'Missing required fields or file' });
+  }
+
+  // 1. Save file to Supabase Storage
+  const filePath = `lien-waivers/${draw_id}/${Date.now()}_${req.file.originalname}`;
+  const { data: uploadData, error: uploadError } = await supabase
+    .storage
+    .from('draw-inspections')
+    .upload(filePath, req.file.buffer, { contentType: req.file.mimetype });
+  if (uploadError) {
+    console.error('Storage upload error:', uploadError);
+    return res.status(500).json({ message: 'File upload failed' });
+  }
+  const fileUrl = supabase.storage.from('draw-inspections').getPublicUrl(filePath).publicURL;
+
+  // 2. Call AI service to verify lien waiver (PDF/Doc parsing)
+  const aiReport = await aiService.verifyLienWaiver(req.file.buffer);
+  const passed = aiReport.errors.length === 0;
+
+  // 3. Insert record in lien_waivers
+  const { data, error } = await supabase
+    .from('lien_waivers')
+    .insert([{
+      draw_id: parseInt(draw_id),
+      contractor_name,
+      waiver_type,
+      file_url: fileUrl,
+      verified_at: new Date().toISOString(),
+      verification_passed: passed,
+      verification_report: aiReport
+    }])
+    .select()
+    .single();
+
+  if (error) {
+    console.error('Insert lien waiver error:', error);
+    return res.status(500).json({ message: 'Failed to save waiver' });
+  }
+
+  res.status(200).json({ message: 'Lien waiver uploaded', data });
+});
 
 // 🚀 Start server
 const PORT = process.env.PORT || 5050;
