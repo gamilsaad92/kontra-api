@@ -205,4 +205,18 @@ app.post('/api/upload-lien-waiver', upload.single('file'), async (req, res) => {
 
 // 🚀 Start server
 const PORT = process.env.PORT || 5050;
+// ─── List lien waivers by draw ───────────────────────────
+app.get('/api/list-lien-waivers', async (req, res) => {
+  const { draw_id } = req.query;
+  if (!draw_id) return res.status(400).json({ message: 'Missing draw_id' });
+
+  const { data, error } = await supabase
+    .from('lien_waivers')
+    .select('id, contractor_name, waiver_type, file_url, verified_at, verification_passed')
+    .eq('draw_id', draw_id)
+    .order('verified_at', { ascending: false });
+
+  if (error) return res.status(500).json({ message: 'Failed to list waivers' });
+  res.json({ waivers: data });
+});
 app.listen(PORT, () => console.log(`Kontra API listening on port ${PORT}`));
