@@ -219,4 +219,27 @@ app.get('/api/list-lien-waivers', async (req, res) => {
   if (error) return res.status(500).json({ message: 'Failed to list waivers' });
   res.json({ waivers: data });
 });
+app.post('/api/loans', async (req, res) => {
+  const { borrower_name, amount, interest_rate, term_months, start_date } = req.body;
+  if (!borrower_name || !amount || !interest_rate || !term_months || !start_date) {
+    return res.status(400).json({ message: 'Missing required fields' });
+  }
+  const { data, error } = await supabase
+    .from('loans')
+    .insert([{ borrower_name, amount, interest_rate, term_months, start_date }])
+    .select()
+    .single();
+  if (error) return res.status(500).json({ message: 'Failed to create loan' });
+  res.status(201).json({ loan: data });
+});
+
+// 2) List loans
+app.get('/api/loans', async (req, res) => {
+  const { data, error } = await supabase
+    .from('loans')
+    .select('id, borrower_name, amount, interest_rate, term_months, start_date, status, created_at')
+    .order('created_at', { ascending: false });
+  if (error) return res.status(500).json({ message: 'Failed to fetch loans' });
+  res.json({ loans: data });
+});
 app.listen(PORT, () => console.log(`Kontra API listening on port ${PORT}`));
