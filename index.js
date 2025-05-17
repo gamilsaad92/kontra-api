@@ -242,4 +242,95 @@ app.get('/api/loans', async (req, res) => {
   if (error) return res.status(500).json({ message: 'Failed to fetch loans' });
   res.json({ loans: data });
 });
+2.1 Generate amortization schedule (call once per loan)
+app.post('/api/loans/:loanId/generate-schedule', async (req, res) => {
+  const { loanId } = req.params;
+  // Fetch loan terms
+  const { data: loan, error: loanErr } = await supabase
+    .from('loans')
+    .select('amount, interest_rate, term_months, start_date')
+    .eq('id', loanId)
+    .single();
+  if (loanErr || !loan) return res.status(404).json({ message: 'Loan not found' });
+
+  const P = parseFloat(loan.amount);
+  const r = parseFloat(loan.interest_rate) / 100 / 12; // monthly rate
+  const n = parseInt(loan.term_months, 10);
+  // Monthly payment formula: A = P * r/(1 - (1+r)^-n)
+  const A = P * r / (1 - Math.pow(1 + r, -n));
+
+  const inserts = [];
+  let balance = P;
+  let date = new Date(loan.start_date);
+  for (let i = 1; i <= n; i++) {
+    const interestDue = balance * r;
+    const principalDue = A - interestDue;
+    balance = balance - principalDue;
+    inserts.push({ loan_id: loanId, due_date: date.toISOString().slice(0,10), principal_due: principalDue, interest_due: interestDue, balance_after: balance });
+    // next month
+    date.setMonth(date.getMonth() + 1);
+  }
+
+  const { data, error } = await supabase
+    .from('amortization_schedules')
+    .insert(inserts)
+    .select();
+  if (error) return res.status(500).json({ message: 'Failed to generate schedule' });
+  res.json({ schedule: data });
+});
+
+// 2.2 List schedule
+app.get('/api/loans/:loanId/schedule', async (req, res) => {
+  const { data, error } = await supabase
+    .from('amortization_schedules')
+    .select('*')
+    .eq('loan_id', req.params.loanId)
+    .order('due_date', { ascending: true });
+  if (error) return res.status(500).json({ message: 'Failed to fetch schedule' });
+  res.json({ schedule: data });
+});
+
+// 2.3 Record a payment
+app.post('/api/loans/:loanId/payments', async (req, res) => {
+  const { amount, payment_date } = req.body;
+  const { data: lastPayment, error: lastErr } = await supabase
+    .from('payments')
+    .select('remaining_balance')
+    .eq('loan_id', req.params.loanId)
+    .order('payment_date', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (lastErr) return res.status(500).json({ message: 'Failed to fetch last payment' });
+
+  const prevBalance = lastPayment ? parseFloat(lastPayment.remaining_balance) : null;
+  // If no previous payment, fetch initial loan amount
+  const { data: loan, error: loanErr } = await supabase
+    .from('loans')
+    .select('amount')
+    .eq('id', req.params.loanId)
+    .single();
+  if (!loan) return res.status(404).json({ message: 'Loan not found' });
+  let balance = prevBalance !== null ? prevBalance : parseFloat(loan.amount);
+
+  // Assuming full payment applies interest first at current rate
+  // Fetch loan rate
+  const { data: loan2 } = await supabase
+    .from('loans')
+    .select('interest_rate')
+    .eq('id', req.params.loanId)
+    .single();
+  const r = parseFloat(loan2.interest_rate) / 100 / 12;
+  const interest = balance * r;
+  const principal = Math.max(0, amount - interest);
+  const remaining = balance - principal;
+
+  const { data, error } = await supabase
+    .from('payments')
+    .insert([{ loan_id: parseInt(req.params.loanId,10), payment_date, amount, applied_principal: principal, applied_interest: interest, remaining_balance: remaining }])
+    .select()
+    .single();
+  if (error) return res.status(500).json({ message: 'Failed to record payment' });
+  res.status(201).json({ payment: data });
+});
+
 app.listen(PORT, () => console.log(`Kontra API listening on port ${PORT}`));
