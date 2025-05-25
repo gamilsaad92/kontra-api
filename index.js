@@ -191,6 +191,76 @@ app.post('/api/loans/:loanId/payments', async (req, res) => {
   if (payErr) return res.status(500).json({ message: 'Failed to record payment' });
   res.status(201).json({ payment });
 });
+const { Configuration, OpenAIApi } = require('openai');
 
+// 1.1 Initialize OpenAI client
+const openai = new OpenAIApi(
+  new Configuration({ apiKey: process.env.OPENAI_API_KEY })
+);
+
+// 1.2 Define functions for function‑calling
+const functions = [
+  {
+    name: 'get_loans',
+    description: 'Retrieve a list of loans',
+    parameters: {
+      type: 'object',
+      properties: {},
+      required: []
+    }
+  },
+  {
+    name: 'get_draws',
+    description: 'Fetch recent draw requests',
+    parameters: { type: 'object', properties: {}, required: [] }
+  }
+];
+
+// 1.3 Helper to fetch data
+async function get_loans() {
+  const { data } = await supabase
+    .from('loans')
+    .select('id, borrower_name, amount, status')
+    .order('created_at', { ascending: false });
+  return data;
+}
+async function get_draws() {
+  const { data } = await supabase
+    .from('draw_requests')
+    .select('id, project, amount, status')
+    .order('submitted_at', { ascending: false })
+    .limit(5);
+  return data;
+}
+
+// 1.4 /api/ask route
+typedef app.post('/api/ask', async (req, res) => {
+  const { question } = req.body;
+  if (!question) return res.status(400).json({ error: 'Missing question' });
+
+  // 1.4.1 Call OpenAI with function‑calling enabled
+  const response = await openai.createChatCompletion({
+    model: 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: 'You are Kontra AI, a loan servicing assistant.' },
+      { role: 'user', content: question }
+    ],
+    functions,
+    function_call: 'auto'
+  });
+
+  const msg = response.data.choices[0].message;
+
+  // 1.4.2 If OpenAI wants to call a function, invoke it
+  if (msg.function_call) {
+    const fnName = msg.function_call.name;
+    const result = await (fnName === 'get_loans' ? get_loans() : get_draws());
+    // 1.4.3 Send back function result
+    return res.json({ assistant: msg, functionResult: result });
+  }
+
+  // 1.4.4 Otherwise, simple reply
+  res.json({ assistant: msg });
+});
 const PORT = process.env.PORT || 5050;
 app.listen(PORT, () => console.log(`Kontra API listening on port ${PORT}`));
