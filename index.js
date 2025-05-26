@@ -4,7 +4,7 @@ const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
 const { createClient } = require('@supabase/supabase-js');
-const { Configuration, OpenAIApi } = require('openai');
+const OpenAI = require('openai');
 require('dotenv').config();
 
 const app = express();
@@ -25,9 +25,7 @@ const supabase = createClient(
 );
 
 // OpenAI client
-const openai = new OpenAIApi(
-  new Configuration({ apiKey: process.env.OPENAI_API_KEY })
-);
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // Health checks
 app.get('/',      (req, res) => res.send('Kontra API is running'));
@@ -95,7 +93,7 @@ app.post('/api/ask', async (req, res) => {
   if (!question) return res.status(400).json({ error: 'Missing question' });
 
   // Call OpenAI with function-calling enabled
-  const response = await openai.createChatCompletion({
+  const response = await openai.chat.completions.create({
     model: 'gpt-4o-mini',
     messages: [
       { role: 'system', content: 'You are Kontra AI, a loan servicing assistant.' },
@@ -105,7 +103,7 @@ app.post('/api/ask', async (req, res) => {
     function_call: 'auto'
   });
 
-  const msg = response.data.choices[0].message;
+  const msg = response.choices[0].message;
 
   // If OpenAI wants to call a function, invoke it
   if (msg.function_call) {
@@ -185,154 +183,4 @@ app.get('/api/get-draws', async (req, res) => {
 
 // Upload lien waiver
 app.post('/api/upload-lien-waiver', upload.single('file'), async (req, res) => {
-  const { draw_id, contractor_name, waiver_type } = req.body;
-  if (!draw_id || !contractor_name || !waiver_type || !req.file) {
-    return res.status(400).json({ message: 'Missing required fields or file' });
-  }
-  const filePath = `lien-waivers/${draw_id}/${Date.now()}_${req.file.originalname}`;
-  const { error: uploadError } = await supabase.storage.from('draw-inspections').upload(filePath, req.file.buffer, { contentType: req.file.mimetype });
-  if (uploadError) return res.status(500).json({ message: 'File upload failed' });
-  const fileUrl = supabase.storage.from('draw-inspections').getPublicUrl(filePath).publicURL;
-
-  const aiReport = { errors: [], fields: {} }; // stub
-  const passed = aiReport.errors.length === 0;
-  const { data, error } = await supabase
-    .from('lien_waivers')
-    .insert([{ draw_id: parseInt(draw_id,10), contractor_name, waiver_type, file_url: fileUrl, verified_at: new Date().toISOString(), verification_passed: passed, verification_report: aiReport }])
-    .select()
-    .single();
-  if (error) return res.status(500).json({ message: 'Failed to save waiver' });
-  res.json({ message: 'Lien waiver uploaded', data });
-});
-
-// List lien waivers
-app.get('/api/list-lien-waivers', async (req, res) => {
-  const { draw_id } = req.query;
-  if (!draw_id) return res.status(400).json({ message: 'Missing draw_id' });
-
-  const { data, error } = await supabase
-    .from('lien_waivers')
-    .select('id, contractor_name, waiver_type, file_url, verified_at, verification_passed')
-    .eq('draw_id', draw_id)
-    .order('verified_at', { ascending: false });
-  if (error) return res.status(500).json({ message: 'Failed to list waivers' });
-  res.json({ waivers: data });
-});
-
-// --- Loan servicing endpoints ---
-// Create loan
-app.post('/api/loans', async (req, res) => {
-  const { borrower_name, amount, interest_rate, term_months, start_date } = req.body;
-  if (!borrower_name || !amount || !interest_rate || !term_months || !start_date) {
-    return res.status(400).json({ message: 'Missing required fields' });
-  }
-  const { data, error } = await supabase
-    .from('loans')
-    .insert([{ borrower_name, amount, interest_rate, term_months, start_date }])
-    .select()
-    .single();
-  if (error) return res.status(500).json({ message: 'Failed to create loan' });
-  res.status(201).json({ loan: data });
-});
-
-// List loans
-app.get('/api/loans', async (req, res) => {
-  const { data, error } = await supabase
-    .from('loans')
-    .select('id, borrower_name, amount, interest_rate, term_months, start_date, status, created_at')
-    .order('created_at', { ascending: false });
-  if (error) return res.status(500).json({ message: 'Failed to fetch loans' });
-  res.json({ loans: data });
-});
-
-// Generate amortization schedule
-app.post('/api/loans/:loanId/generate-schedule', async (req, res) => {
-  const loanId = parseInt(req.params.loanId, 10);
-  const { data: loan, error: loanErr } = await supabase
-    .from('loans')
-    .select('amount, interest_rate, term_months, start_date')
-    .eq('id', loanId)
-    .single();
-  if (loanErr || !loan) return res.status(404).json({ message: 'Loan not found' });
-
-  const P = parseFloat(loan.amount);
-  const r = parseFloat(loan.interest_rate) / 100 / 12;
-  const n = parseInt(loan.term_months, 10);
-  const A = P * r / (1 - Math.pow(1 + r, -n));
-
-  const inserts = [];
-  let balance = P;
-  let date = new Date(loan.start_date);
-  for (let i = 1; i <= n; i++) {
-    const interestDue = balance * r;
-    const principalDue = A - interestDue;
-    balance -= principalDue;
-    inserts.push({ loan_id: loanId, due_date: date.toISOString().slice(0,10), principal_due: principalDue, interest_due: interestDue, balance_after: balance });
-    date.setMonth(date.getMonth() + 1);
-  }
-
-  const { data: schedule, error: schedErr } = await supabase
-    .from('amortization_schedules')
-    .insert(inserts)
-    .select();
-  if (schedErr) return res.status(500).json({ message: 'Failed to generate schedule' });
-  res.json({ schedule });
-});
-
-// List schedule
-app.get('/api/loans/:loanId/schedule', async (req, res) => {
-  const loanId = parseInt(req.params.loanId, 10);
-  const { data, error } = await supabase
-    .from('amortization_schedules')
-    .select('*')
-    .eq('loan_id', loanId)
-    .order('due_date', { ascending: true });
-  if (error) return res.status(500).json({ message: 'Failed to fetch schedule' });
-  res.json({ schedule: data });
-});
-
-// Record payment
-app.post('/api/loans/:loanId/payments', async (req, res) => {
-  const loanId = parseInt(req.params.loanId, 10);
-  const { amount, payment_date } = req.body;
-
-  const { data: lastPayment, error: lastErr } = await supabase
-    .from('payments')
-    .select('remaining_balance')
-    .eq('loan_id', loanId)
-    .order('payment_date', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (lastErr) return res.status(500).json({ message: 'Failed to fetch last payment' });
-
-  const prevBalance = lastPayment ? parseFloat(lastPayment.remaining_balance) : null;
-  const { data: loan, error: loanErr } = await supabase
-    .from('loans')
-    .select('amount')
-    .eq('id', loanId)
-    .single();
-  if (loanErr) return res.status(404).json({ message: 'Loan not found' });
-
-  let balance = prevBalance !== null ? prevBalance : parseFloat(loan.amount);
-  const { data: loan2 } = await supabase
-    .from('loans')
-    .select('interest_rate')
-    .eq('id', loanId)
-    .single();
-  const r2 = parseFloat(loan2.interest_rate) / 100 / 12;
-  const interest = balance * r2;
-  const principal = Math.max(0, amount - interest);
-  const remaining = balance - principal;
-
-  const { data: payment, error: payErr } = await supabase
-    .from('payments')
-    .insert([{ loan_id: loanId, payment_date, amount, applied_principal: principal, applied_interest: interest, remaining_balance: remaining }])
-    .select()
-    .single();
-  if (payErr) return res.status(500).json({ message: 'Failed to record payment' });
-  res.status(201).json({ payment });
-});
-
-// Start server
-const PORT = process.env.PORT || 5050;
-app.listen(PORT, () => console.log(`Kontra API listening on port ${PORT}`));
+  const {
