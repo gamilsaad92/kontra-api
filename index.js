@@ -309,3 +309,240 @@ app.post('/api/loans/:loanId/payments', async (req, res) => {
 // Start server
 const PORT = process.env.PORT || 5050;
 app.listen(PORT, () => console.log(`Kontra API listening on port ${PORT}`));
+
+// After express.json():
+const jwt = require('jsonwebtoken')
+const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
+// Middleware to check the Authorization header
+function checkAuth(req, res, next) {
+  const token = req.headers.authorization?.split(' ')[1]
+  if (!token) return res.status(401).json({ error: 'No token' })
+
+  // Verify via Supabase JWT secret
+  try {
+    const { sub: userId } = jwt.verify(token, process.env.SUPABASE_JWT_SECRET)
+    req.userId = userId
+    return next()
+  } catch (err) {
+    return res.status(401).json({ error: 'Invalid token' })
+  }
+}
+
+// Example: protect draw-request route:
+app.post('/api/draw-request', checkAuth, async (req, res) => {
+  // Now req.userId is available
+  const userId = req.userId
+  // … insert draw with a created_by: userId field …
+})
+// Create Project
+app.post('/api/projects', checkAuth, async (req, res) => {
+  const { name, number, address } = req.body
+  const owner_id = req.userId
+  if (!name || !number || !address) {
+    return res.status(400).json({ message: 'Missing fields' })
+  }
+  const { data, error } = await supabase
+    .from('projects')
+    .insert([{ name, number, address, owner_id }])
+    .select()
+    .single()
+  if (error) return res.status(500).json({ message: 'Create failed' })
+  res.status(201).json({ project: data })
+})
+
+// List Projects (only those you own)
+app.get('/api/projects', checkAuth, async (req, res) => {
+  const { data, error } = await supabase
+    .from('projects')
+    .select('*')
+    .eq('owner_id', req.userId)
+    .order('created_at', { ascending: false })
+  if (error) return res.status(500).json({ message: 'Fetch failed' })
+  res.json({ projects: data })
+})
+
+// Update Project
+app.put('/api/projects/:id', checkAuth, async (req, res) => {
+  const projectId = parseInt(req.params.id, 10)
+  const { name, number, address, status } = req.body
+  // Ensure the user owns it
+  const { data: existing } = await supabase
+    .from('projects')
+    .select('owner_id')
+    .eq('id', projectId)
+    .single()
+  if (!existing || existing.owner_id !== req.userId) {
+    return res.status(403).json({ message: 'Not allowed' })
+  }
+  const updates = { name, number, address, status, updated_at: new Date().toISOString() }
+  const { data, error } = await supabase
+    .from('projects')
+    .update(updates)
+    .eq('id', projectId)
+    .select()
+    .single()
+  if (error) return res.status(500).json({ message: 'Update failed' })
+  res.json({ project: data })
+})
+
+// Delete Project (soft-delete or hard-delete)
+app.delete('/api/projects/:id', checkAuth, async (req, res) => {
+  const projectId = parseInt(req.params.id, 10)
+  const { data: existing } = await supabase
+    .from('projects')
+    .select('owner_id')
+    .eq('id', projectId)
+    .single()
+  if (!existing || existing.owner_id !== req.userId) {
+    return res.status(403).json({ message: 'Not allowed' })
+  }
+  // Here we do a hard delete:
+  const { error } = await supabase.from('projects').delete().eq('id', projectId)
+  if (error) return res.status(500).json({ message: 'Delete failed' })
+  res.json({ message: 'Project removed' })
+})
+const functions = [
+  { name: 'get_loans', … },
+  { name: 'get_draws', … },
+  {
+    name: 'get_project_status',
+    description: 'Return key metrics for a given project',
+    parameters: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'integer', description: 'The project ID' }
+      },
+      required: ['projectId']
+    }
+  },
+  {
+    name: 'get_lien_status',
+    description: 'Return list of lien waivers (with pass/fail) for a project',
+    parameters: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'integer', description: 'The project ID' }
+      },
+      required: ['projectId']
+    }
+  },
+  {
+    name: 'calculate_project_risk',
+    description: 'Aggregate risk scores and return overall project risk',
+    parameters: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'integer', description: 'The project ID' }
+      },
+      required: ['projectId']
+    }
+  }
+]
+async function get_project_status(params) {
+  const { projectId } = params
+  // 1) Total draws submitted vs approved
+  const { data: drawData } = await supabase
+    .from('draw_requests')
+    .select('id, amount, status')
+    .eq('project_id', projectId)
+
+  const totalDraws = drawData.length
+  const approvedDraws = drawData.filter(d => d.status === 'approved').length
+  const sumDrawn = drawData.filter(d => d.status === 'approved').reduce((acc, d) => acc + parseFloat(d.amount), 0)
+
+  // 2) Outstanding reserve
+  // (Assume you have a `reserves` table or calculate via loan minus drawn…)
+  const { data: loanData } = await supabase
+    .from('loans')
+    .select('amount, status')
+    .eq('project_id', projectId)
+    .single()
+  const outstandingReserve = loanData && loanData.status === 'active'
+    ? loanData.amount - sumDrawn
+    : 0
+
+  return {
+    totalDraws,
+    approvedDraws,
+    sumDrawn,
+    outstandingReserve
+  }
+}
+
+async function get_lien_status(params) {
+  const { projectId } = params
+  const { data } = await supabase
+    .from('lien_waivers')
+    .select('id, contractor_name, waiver_type, verification_passed')
+    .eq('project_id', projectId)
+  return data
+}
+
+async function calculate_project_risk(params) {
+  const { projectId } = params
+  // Fetch draw risk scores
+  const { data: draws } = await supabase
+    .from('draw_requests')
+    .select('risk_score')
+    .eq('project_id', projectId)
+
+  // Average risk—simple example:
+  const averageRisk = draws.length
+    ? draws.reduce((sum, d) => sum + parseFloat(d.risk_score), 0) / draws.length
+    : 0
+
+  // Check for overdue inspections (≥7 days since submission)
+  const { data: inspections } = await supabase
+    .from('inspections')
+    .select('id, submitted_at')
+    .eq('project_id', projectId)
+    .gte('submitted_at', new Date(Date.now() - 7*24*60*60*1000).toISOString())
+
+  const overdueInspections = inspections.length
+
+  return {
+    averageRisk,
+    overdueInspections
+  }
+}
+if (msg.function_call) {
+  const fnName = msg.function_call.name
+  let result
+  switch(fnName) {
+    case 'get_loans':
+      result = await get_loans()
+      break
+    case 'get_draws':
+      result = await get_draws()
+      break
+    case 'get_project_status':
+      const { projectId } = JSON.parse(msg.function_call.arguments)
+      result = await get_project_status({ projectId })
+      break
+    case 'get_lien_status':
+      const { projectId: pid2 } = JSON.parse(msg.function_call.arguments)
+      result = await get_lien_status({ projectId: pid2 })
+      break
+    case 'calculate_project_risk':
+      const { projectId: pid3 } = JSON.parse(msg.function_call.arguments)
+      result = await calculate_project_risk({ projectId: pid3 })
+      break
+    default:
+      result = {}
+  }
+  return res.json({ assistant: msg, functionResult: result })
+}
+// in index.js
+app.get('/api/analytics/draws-volume', checkAuth, async (req, res) => {
+  // e.g. counts per month for last 12 months
+  const { data, error } = await supabase.rpc('get_draws_volume') // create a Postgres function
+  if (error) return res.status(500).json({ message: 'Error' })
+  res.json({ drawsVolume: data })
+})
+const Sentry = require('@sentry/node')
+Sentry.init({ dsn: process.env.SENTRY_DSN })
+app.use(Sentry.Handlers.requestHandler())
+app.use(Sentry.Handlers.errorHandler())
+const morgan = require('morgan')
+app.use(morgan('combined'))
