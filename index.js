@@ -4,7 +4,7 @@ const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
 const { createClient } = require('@supabase/supabase-js');
-const { Configuration, OpenAIApi } = require('openai');
+const OpenAI = require('openai');          // ← v4+ default export
 require('dotenv').config();
 
 const app = express();
@@ -14,10 +14,10 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// ── OpenAI Client (v5 SDK) ────────────────────────────────────────────────
-const openai = new OpenAIApi(
-  new Configuration({ apiKey: process.env.OPENAI_API_KEY })
-);
+// ── OpenAI Client (v4+ SDK) ────────────────────────────────────────────────
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
 // Define the functions that the assistant can “call.”
 const functions = [
@@ -416,7 +416,8 @@ app.post('/api/ask', async (req, res) => {
   if (!question) return res.status(400).json({ error: 'Missing question' });
 
   try {
-    const response = await openai.createChatCompletion({
+    // ← v4+ chat completion call:
+    const response = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
         { role: 'system', content: 'You are Kontra AI, a loan-servicing and draw-management assistant.' },
@@ -426,7 +427,7 @@ app.post('/api/ask', async (req, res) => {
       function_call: 'auto'
     });
 
-    const msg = response.data.choices[0].message;
+    const msg = response.choices[0].message;
 
     // If OpenAI is instructing a function call, run it
     if (msg.function_call) {
